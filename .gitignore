@@ -1,0 +1,9 @@
+# WorkBuddy local project data — never publish
+.workbuddy/
+
+# macOS
+.DS_Store
+
+# Editor / runtime
+node_modules/
+*.swp

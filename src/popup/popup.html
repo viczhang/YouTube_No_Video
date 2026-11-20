@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <span class="dot" id="dot"></span>
+      <div class="heading">
+        <h1>YouTube No Video</h1>
+        <p class="sub" id="scope">Applies to the current tab only</p>
+      </div>
+    </header>
+
+    <div class="row lang-row">
+      <label class="lang-label" id="langLabel" for="lang">Language</label>
+      <select id="lang"></select>
+    </div>
+
+    <div class="row">
+      <div class="row-text">
+        <strong id="toggleTitle">Audio only</strong>
+        <small id="toggleDesc">Stop rendering the video, keep the sound playing</small>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="enabled">
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div class="row">
+      <div class="row-text">
+        <strong id="deepTitle">Deep power saving</strong>
+        <small id="deepDesc">Also block video decoding and downloads (L2)</small>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="deep">
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <p class="note" id="note" hidden></p>
+    <button id="retry" type="button" hidden>Retry deep power saving</button>
+    <p class="err" id="err" hidden>Open this extension on a YouTube tab.</p>
+
+    <footer id="footer">Changes apply instantly — no reload, no interruption to the audio.</footer>
+  </div>
+  <script src="../i18n/strings.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

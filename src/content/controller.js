@@ -5,6 +5,7 @@
   const LANG_KEY = 'ynv.lang';
   const CH_PAGE = 'ynv:page';
   const CH_CONTENT = 'ynv:content';
+  const END_GRACE_MS = 2000;
   const DEFAULT = { enabled: false, deep: true, fallback: false };
   const DEFAULT_LANG = 'en';
   const FALLBACK_HINT = {
@@ -36,6 +37,22 @@
     window.postMessage({ channel: CH_CONTENT, type: 'STATE_CHANGED', state: s }, '*');
   }
 
+  function broadcast(s) {
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'YNV_STATE', state: s },
+        () => void chrome.runtime.lastError
+      );
+    } catch (_) {}
+  }
+
+  function commit(s) {
+    cancelAutoOff();
+    write(s);
+    applyState(s);
+    broadcast(s);
+  }
+
   function mark(v) {
     if (!v.hasAttribute('data-ynv')) v.setAttribute('data-ynv', '1');
   }
@@ -62,12 +79,14 @@
     '.html5-video-container', '#player-container', '#player'
   ].join(', ');
 
+  function inMainPlayer(node) {
+    try { return !!(node && node.closest && node.closest(PLAYER_SEL)); } catch (_) { return false; }
+  }
+
   function markHost(v) {
     // Hover previews and ad thumbnails also create <video> nodes: only the
     // real player gets the hint, and never more than one at a time.
-    let inPlayer = false;
-    try { inPlayer = !!(v.closest && v.closest(PLAYER_SEL)); } catch (_) {}
-    if (!inPlayer) return;
+    if (!inMainPlayer(v)) return;
 
     const host = v.parentElement;
     if (!host || host.hasAttribute('data-ynv-host')) return;
@@ -127,6 +146,47 @@
     }
   }
 
+  // "ended" never ends the extension while a playlist is rolling: YouTube
+  // reuses the same <video> for the next track, so a play/playing event (or
+  // a still-playing element at the end of the grace window) cancels the timer.
+  let endTimer = 0;
+  let pendingVideo = null;
+
+  function cancelAutoOff() {
+    if (endTimer) { try { window.clearTimeout(endTimer); } catch (_) {} }
+    endTimer = 0;
+    pendingVideo = null;
+  }
+
+  function turnOffAfterEnd() {
+    endTimer = 0;
+    const v = pendingVideo;
+    pendingVideo = null;
+    if (v && !v.ended && !v.paused) return;
+    const s = read();
+    if (!s.enabled) return;
+    commit({ ...s, enabled: false });
+  }
+
+  function onEnded(ev) {
+    if (!enabled) return;
+    const v = ev && ev.target;
+    if (!v || v.tagName !== 'VIDEO' || !inMainPlayer(v)) return;
+    cancelAutoOff();
+    pendingVideo = v;
+    endTimer = window.setTimeout(turnOffAfterEnd, END_GRACE_MS);
+  }
+
+  function onPlay(ev) {
+    const v = ev && ev.target;
+    if (v && v.tagName === 'VIDEO' && inMainPlayer(v)) cancelAutoOff();
+  }
+
+  // Media events do not bubble, but document-level capture still sees them.
+  document.addEventListener('ended', onEnded, true);
+  document.addEventListener('play', onPlay, true);
+  document.addEventListener('playing', onPlay, true);
+
   let lastDismiss = 0;
   const domObserver = new MutationObserver((records) => {
     if (!enabled) return;
@@ -167,8 +227,7 @@
         next.deep = true;
         next.fallback = false;
       }
-      write(next);
-      applyState(next);
+      commit(next);
       reply({ ok: true, state: next });
       return true;
     }
@@ -182,6 +241,7 @@
     if (!d || d.channel !== CH_PAGE || d.type !== 'FALLBACK') return;
     const s = read();
     applyState(s);
+    broadcast(s);
     try {
       chrome.runtime.sendMessage(
         { type: 'YNV_FALLBACK', reason: d.reason, state: s },
@@ -207,6 +267,8 @@
     } catch (_) {}
   }
 
-  applyState(read());
+  const initial = read();
+  applyState(initial);
   initLang();
+  broadcast(initial);
 })();

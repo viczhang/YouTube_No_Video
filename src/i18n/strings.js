@@ -24,7 +24,7 @@ globalThis.YNV_LOCALES = {
     retry: 'Retry deep power saving',
     errTab: 'Open this extension on a YouTube tab.',
     errPreview: 'Preview mode: use this inside the Chrome extension.',
-    footer: 'Changes apply instantly — no reload, no interruption to the audio.',
+    footer: 'Instant, no reload. Turns off automatically when the video ends.',
     hintTitle: 'YouTube No Video.',
     hintSub: "To play the video, go to the extension on your browser's toolbar."
   },
@@ -42,7 +42,7 @@ globalThis.YNV_LOCALES = {
     retry: '重试深度省电',
     errTab: '请在一个 YouTube 标签页中打开本扩展。',
     errPreview: '预览模式：请在 Chrome 扩展中使用。',
-    footer: '切换即时生效，无需刷新，音乐不中断',
+    footer: '即时生效、无需刷新；视频结束后自动关闭',
     hintTitle: 'YouTube No Video.',
     hintSub: '要播放视频，请点击浏览器工具栏中的扩展程序。'
   }

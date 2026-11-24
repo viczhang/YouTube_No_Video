@@ -106,7 +106,10 @@
 
   if (hasApi && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.type === 'YNV_FALLBACK' && msg.state) {
+      if (msg && msg.type === 'YNV_STATE' && msg.state) {
+        state = msg.state;
+        render();
+      } else if (msg && msg.type === 'YNV_FALLBACK' && msg.state) {
         state = msg.state;
         render();
       }

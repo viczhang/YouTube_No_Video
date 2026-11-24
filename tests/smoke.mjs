@@ -45,6 +45,19 @@ assert.match(css, /content:\s*attr\(data-ynv-title\)/);
 assert.match(css, /content:\s*attr\(data-ynv-sub\)/);
 assert.doesNotMatch(css, /content:\s*"/, 'hint text must come from the locale pack');
 assert.ok((manifest.permissions || []).includes('storage'), 'language preference needs chrome.storage');
+assert.ok(manifest.background && manifest.background.service_worker, 'toolbar indicator needs a service worker');
+const swPath = path.join(ROOT, manifest.background.service_worker);
+assert.ok(fs.existsSync(swPath), 'missing service worker');
+for (const n of [16, 32, 48, 128]) {
+  assert.ok(fs.existsSync(path.join(ROOT, `icons/icon${n}-on.png`)), `missing active icon: ${n}`);
+}
+const swSource = fs.readFileSync(swPath, 'utf8');
+assert.match(swSource, /chrome\.action\.setBadgeText/);
+assert.match(swSource, /chrome\.action\.setIcon/);
+assert.match(swSource, /tabId/, 'indicator must be scoped per tab');
+const controllerSrc = fs.readFileSync(path.join(ROOT, 'src/content/controller.js'), 'utf8');
+assert.match(controllerSrc, /addEventListener\('ended'/, 'auto-off needs the ended capture listener');
+assert.match(controllerSrc, /YNV_STATE/, 'state changes must be broadcast to popup and worker');
 const isolatedCs = manifest.content_scripts.find((cs) => cs.world === 'ISOLATED');
 assert.ok(isolatedCs.js.includes('src/i18n/strings.js'));
 assert.ok(
@@ -280,6 +293,9 @@ class MockEl {
     this.attrs = {};
     this._classes = new Set();
     this._inPlayer = true;
+    this.ended = true;
+    this.paused = true;
+    this.currentTime = 100;
     this.classList = {
       add: (c) => this._classes.add(c),
       remove: (c) => this._classes.delete(c),
@@ -301,6 +317,7 @@ class MockMutationObserver {
 
 const hostEl = new MockEl('div');
 const videoElement = new MockEl('video', hostEl);
+const docListeners = {};
 const mockDoc = {
   documentElement: hostEl,
   querySelectorAll(sel) {
@@ -309,17 +326,27 @@ const mockDoc = {
     if (sel === '[data-ynv-host]') return hostEl.hasAttribute('data-ynv-host') ? [hostEl] : [];
     return [];
   },
-  addEventListener() {},
+  querySelector(sel) { return sel === 'video' ? videoElement : null; },
+  addEventListener(type, fn) { (docListeners[type] ||= []).push(fn); },
   dispatchEvent() { return true; }
 };
 
 let computedPosition = 'absolute';
+const sessionStore = new Map();
+let pendingTimeout = null;
+const sent = [];
 const mockWin = {
-  sessionStorage: { getItem: () => null, setItem: () => {} },
+  sessionStorage: {
+    getItem: (k) => (sessionStore.has(k) ? sessionStore.get(k) : null),
+    setItem: (k, v) => sessionStore.set(k, String(v)),
+    removeItem: (k) => sessionStore.delete(k)
+  },
   postMessage: () => {},
   getComputedStyle: () => ({ position: computedPosition }),
   setInterval: () => 1,
   clearInterval: () => {},
+  setTimeout: (fn, ms) => { pendingTimeout = { fn, ms }; return 1; },
+  clearTimeout: () => { pendingTimeout = null; },
   addEventListener: () => {}
 };
 
@@ -329,7 +356,7 @@ let savedLang = null;
 const mockChrome = {
   runtime: {
     onMessage: { addListener: (fn) => { controllerListener = fn; } },
-    sendMessage: (_msg, cb) => { if (cb) cb(); },
+    sendMessage: (msg, cb) => { sent.push(msg); if (cb) cb(); },
     lastError: undefined
   },
   storage: {
@@ -397,5 +424,81 @@ storageListener({ 'ynv.lang': { newValue: 'zh-CN' } }, 'local');
 assert.equal(hostEl.attrs['data-ynv-title'], LOCALES['zh-CN'].hintTitle);
 assert.equal(hostEl.attrs['data-ynv-sub'], LOCALES['zh-CN'].hintSub);
 ok('switching to Chinese updates the player hint live, no reload needed');
+
+console.log('\n[4b] Auto-off when the video ends');
+await callController({ type: 'YNV_SET_STATE', enabled: true });
+sent.length = 0;
+assert.equal(typeof docListeners.ended[0], 'function');
+assert.equal(typeof docListeners.play[0], 'function');
+
+// A playlist/autoplay next track fires play on the same <video>: stay on.
+docListeners.ended[0]({ target: videoElement });
+assert.ok(pendingTimeout && pendingTimeout.ms >= 500, 'ended schedules a grace timer');
+docListeners.play[0]({ target: videoElement });
+assert.equal(pendingTimeout, null);
+assert.equal(JSON.parse(sessionStore.get('ynv.state')).enabled, true);
+ok('playlist auto-next cancels auto-off, audio-only stays on');
+
+// A real end: state written, overlay cleared, popup/worker notified.
+docListeners.ended[0]({ target: videoElement });
+assert.ok(pendingTimeout);
+const fireEnd = pendingTimeout.fn;
+pendingTimeout = null;
+fireEnd();
+assert.equal(JSON.parse(sessionStore.get('ynv.state')).enabled, false);
+assert.equal(videoElement.hasAttribute('data-ynv'), false);
+assert.equal(hostEl.hasAttribute('data-ynv-host'), false);
+assert.ok(sent.some((m) => m.type === 'YNV_STATE' && m.state.enabled === false));
+ok('video ended -> extension off, overlay cleared, state broadcast');
+
+// Hover previews also emit ended, they must not switch the extension off.
+videoElement._inPlayer = false;
+await callController({ type: 'YNV_SET_STATE', enabled: true });
+docListeners.ended[0]({ target: videoElement });
+assert.equal(pendingTimeout, null);
+assert.equal(JSON.parse(sessionStore.get('ynv.state')).enabled, true);
+ok('hover-preview ended never turns the extension off');
+
+console.log('\n[5] Toolbar indicator (service worker)');
+const swCalls = { badge: [], color: [], icon: [] };
+let swMsgListener = null;
+let swActivatedListener = null;
+let swReply = { ok: true, state: { enabled: true } };
+const swChrome = {
+  action: {
+    setBadgeText: (d) => swCalls.badge.push(d),
+    setBadgeBackgroundColor: (d) => swCalls.color.push(d),
+    setIcon: (d) => swCalls.icon.push(d)
+  },
+  runtime: { onMessage: { addListener: (fn) => { swMsgListener = fn; } } },
+  tabs: {
+    onActivated: { addListener: (fn) => { swActivatedListener = fn; } },
+    sendMessage: async () => swReply
+  }
+};
+vm.runInNewContext(swSource, { chrome: swChrome, console });
+assert.equal(typeof swMsgListener, 'function');
+assert.equal(typeof swActivatedListener, 'function');
+
+swMsgListener({ type: 'YNV_STATE', state: { enabled: true } }, { tab: { id: 7 } });
+assert.equal(swCalls.badge.at(-1).tabId, 7);
+assert.equal(swCalls.badge.at(-1).text, 'ON');
+assert.match(swCalls.icon.at(-1).path['16'], /-on\.png$/);
+assert.equal(swCalls.color.at(-1).color, '#1EA97A');
+
+swMsgListener({ type: 'YNV_STATE', state: { enabled: false } }, { tab: { id: 7 } });
+assert.equal(swCalls.badge.at(-1).text, '');
+assert.doesNotMatch(swCalls.icon.at(-1).path['16'], /-on\.png$/);
+swMsgListener({ type: 'YNV_STATE', state: { enabled: true } }, {});
+assert.equal(swCalls.badge.length, 2, 'messages without a tab id must be ignored');
+ok('per-tab ON badge + green active icon on enable, cleared on disable');
+
+await swActivatedListener({ tabId: 9 });
+assert.equal(swCalls.badge.at(-1).tabId, 9);
+assert.equal(swCalls.badge.at(-1).text, 'ON');
+swReply = { ok: false };
+await swActivatedListener({ tabId: 10 });
+assert.equal(swCalls.badge.at(-1).text, '');
+ok('tab activation re-queries state, so a restarted worker never shows a stale badge');
 
 console.log(`\nAll ${results.length} checks passed.\n`);
